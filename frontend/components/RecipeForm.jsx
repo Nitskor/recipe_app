@@ -30,13 +30,6 @@ const RecipeForm = ({ onSubmit }) => {
         </button>
       </form>
 
-      {generatedRecipe && (
-        <div className="mt-6 p-4 border border-gray-300 rounded-xl bg-gray-50 prose max-w-none whitespace-pre-wrap">
-          <ReactMarkdown>{`\`\`\`json
-${JSON.stringify(generatedRecipe, null, 2)}
-\`\`\``}</ReactMarkdown>
-        </div>
-      )}
     </div>
   );
 };
