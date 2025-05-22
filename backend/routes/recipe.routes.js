@@ -6,6 +6,9 @@ import dotenv from "dotenv";
 import { protectRoute } from "../middleware/protectRoute.js";
 import { generateUniqueSlug } from "../lib/utils/generateUniqueSlug.js";
 import { APIChain } from "langchain/chains";
+import { RecipeSchema } from "../validation/recipeSchema.js";
+import { cleanAIJson } from "../lib/utils/cleanAIJson.js";
+import { jsonrepair } from "jsonrepair";
 
 dotenv.config();
 const router = express.Router();
@@ -43,7 +46,7 @@ Recipe:
 """
 ${rawText}
 """
-ONLY return a valid JSON object — no explanations, markdown, or backticks.
+ONLY return a raw JSON object — no explanations, markdown, or backticks.
 If any value is missing, use a best-guess default (e.g., 1, 0, empty string, etc.).
 `;
 
@@ -116,6 +119,9 @@ router.get("/:slug",protectRoute, async (req, res) => {
 // Update a recipe
 router.put("/:slug", protectRoute, async (req, res) => {
   try {
+    // Prevent users from changing the author field
+    const updateData = { ...req.body };
+    delete updateData.author;
     const updatedRecipe = await Recipe.findOneAndUpdate(
       { slug: req.params.slug, author: req.user._id }, // Ensure the user is the author
       req.body,
@@ -173,83 +179,103 @@ router.post("/:slug/like", protectRoute, async (req, res) => {
     res.status(500).json({ error: "Internal Server Error" });
   }
 });
-
-// Ask AI to generate a recipe
+// ask AI to generate a recipe
 router.post("/ask-ai", protectRoute, async (req, res) => {
   const { query } = req.body;
   const author = req.user._id;
 
-  if (!query) {
-    return res.status(400).json({ error: "No query provided" });
-  }
+  if (!query) return res.status(400).json({ error: "No query provided" });
 
-  const prompt = `
-Generate a recipe based on the following request: "${query}"
+  const basePrompt = `
+You are a helpful recipe assistant.
 
-Format the recipe as **valid JSON**:
+Below is a strict JSON recipe template. Fill in all fields with appropriate data based on the query, keeping the exact JSON structure, keys, and data types intact.
+
+Do NOT add or remove any keys or change the structure. Replace only the placeholder values with real data.
+
 {
-  "title": "...",
-  "slug": "...",
-  "description": "...",
-  "servings": 1,
+  "title": "",
+  "slug": "",
+  "description": "",
+  "servings": 0,
   "prep_time_minutes": 0,
   "cook_time_minutes": 0,
   "total_time_minutes": 0,
   "ingredients": [
-    { "name": "...", "quantity": 1, "unit": "", "notes": "" }
+    {
+      "name": "",
+      "quantity": 0,
+      "unit": "",
+      "notes": ""
+    }
   ],
-  "instructions": ["..."],
-  "tags": [],
+  "instructions": [""],
+  "tags": [""],
   "author": "${author}"
 }
 
-Only return the JSON. No explanations, markdown, or extra text.
-**Important**: Convert all fractions like 1/2 to decimal format like 0.5.
-If something is unclear, use best-guess defaults.
-`;
+Strict rules:
+- Output ONLY the raw JSON object.
+- Use double quotes for all strings and keys.
+- No trailing commas.
+- Convert fractions to decimals.
+- Use an array of ingredients and instructions as shown.
+- If any data is unknown, use empty strings or zeros.
+- The author field must be exactly "${author}".
 
-  try {
-    const response = await llm.invoke([
-      {
-        role: "system",
-        content: "You are a helpful recipe assistant that returns structured recipes.",
-      },
-      { role: "user", content: prompt },
-    ]);
+Request: "${query}"
+  `;
 
-    const content = response.content;
+  let attempts = 0;
+  const maxAttempts = 3;
+  let lastError = null;
 
-    // Strip markdown formatting (```json ... ```)
-    const cleaned = content
-      .replace(/^```json|```$/g, "")
-      .replace(/^```|```$/g, "")
-      .trim();
-
-    // Optional: fix known bad patterns like 1/2 to 0.5
-    const fixedFractions = cleaned.replace(/"quantity":\s*([0-9]+)\/([0-9]+)/g, (_, num, denom) => {
-      const decimal = parseFloat((+num / +denom).toFixed(2));
-      return `"quantity": ${decimal}`;
-    });
-
-    let recipeData;
+  while (attempts < maxAttempts) {
+    attempts++;
     try {
-      recipeData = JSON.parse(fixedFractions);
-    } catch (parseErr) {
-      console.error("JSON Parse Error:", parseErr.message);
-      console.log("Raw AI Response:", content);
-      return res.status(500).json({ error: "AI returned invalid JSON", raw: content });
+      const response = await llm.invoke([
+        { role: "system", content: "Return only valid JSON matching the provided template." },
+        { role: "user", content: basePrompt }
+      ]);
+
+      let content = response.content.trim();
+
+      // Remove markdown code fences
+      content = content.replace(/^```json|```$/g, "").replace(/^```|```$/g, "").trim();
+
+      // Fix fractions in quantity fields, e.g. "quantity": "1/2" -> 0.5
+      content = content.replace(
+        /"quantity":\s*"(\d+)\s*\/\s*(\d+)"/g,
+        (_, numerator, denominator) => `"quantity": ${(Number(numerator) / Number(denominator)).toFixed(2)}`
+      );
+
+      // Repair and parse JSON (your existing logic)
+      const repaired = jsonrepair(content);
+      const parsed = JSON.parse(repaired);
+
+      // Validate schema (your existing Zod or similar validation)
+      const recipeData = RecipeSchema.parse(parsed);
+      // Make sure slug is safe
+      const baseSlug = slugify(recipeData.slug || recipeData.title, { lower: true });
+      recipeData.slug = await generateUniqueSlug(baseSlug);
+
+      return res.status(200).json(recipeData);
+    } catch (err) {
+      lastError = err;
+      console.warn(`Attempt ${attempts} failed:`, err.message || err);
+      if (lastError && attempts === maxAttempts) {
+        console.log("Raw AI response:", response?.content);
+      }
     }
-
-    // Generate unique slug
-    const baseSlug = slugify(recipeData.slug || recipeData.title, { lower: true });
-    recipeData.slug = await generateUniqueSlug(baseSlug);
-
-    res.status(200).json(recipeData);
-  } catch (err) {
-    console.error("Error generating AI recipe:", err.message);
-    res.status(500).json({ error: "Failed to generate recipe" });
   }
+
+  return res.status(500).json({
+    error: "AI failed to return valid JSON after multiple attempts.",
+    details: lastError?.message || lastError,
+  });
 });
+
+
 
 router.post("/from-json", protectRoute, async (req, res) => {
   try {

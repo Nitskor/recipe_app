@@ -2,6 +2,7 @@ import express from "express";
 import User from "../models/users.model.js";  // Import User model from the right path
 import bcrypt from "bcryptjs";
 import { generateTokenAndSetCookie } from "../lib/utils/generateToken.js"; // Import the token generation function
+import { protectRoute } from "../middleware/protectRoute.js";
 
 const router = express.Router();
 
@@ -73,6 +74,10 @@ router.post("/logout", (req, res) => {
   });
 
   res.json({ message: "Logged out successfully" });
+});
+
+router.get("/me", protectRoute, async (req, res) => {
+  res.status(200).json({ user: req.user });
 });
 
 export default router;

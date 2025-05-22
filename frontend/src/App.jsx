@@ -1,16 +1,23 @@
-import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from '/vite.svg'
-import './App.css'
+import { BrowserRouter as Router, Routes, Route } from "react-router-dom";
+import CreateRecipe from "../pages/CreateRecipe.jsx";
+import Login from "../pages/Login.jsx";
+import HomePage from "../pages/HomePage.jsx";
+import Register from "../pages/Register.jsx";
+
 
 function App() {
-  const [count, setCount] = useState(0)
-
   return (
-    <>
-      <p className='text-5xl text-red-500 bg-blue-300' >Hello from App</p>
-    </>
-  )
+  
+    <Routes>
+      {/* <Route path="/" element={<Home />} /> */}
+      <Route path="/home" element={<HomePage />} />
+      <Route path="/register" element={<Register />} />
+      <Route path="/login" element={<Login />} />
+      <Route path="/create" element={<CreateRecipe />} />
+      {/* <Route path="/recipes/:slug" element={<RecipeDetail />} /> */}
+    </Routes>
+    
+  );
 }
 
-export default App
+export default App;
